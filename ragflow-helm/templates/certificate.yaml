@@ -1,0 +1,18 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "ragflow.fullname" . }}-tls
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  commonName: {{ .Values.certificate.commonName }}
+  dnsNames:
+    {{- range .Values.certificate.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  issuerRef:
+    kind: {{ .Values.certificate.issuerRef.kind }}
+    name: {{ .Values.certificate.issuerRef.name }}
+  secretName: {{ .Values.certificate.secretName }}
+{{- end }}

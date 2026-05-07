@@ -1,0 +1,158 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.mysql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-mysql-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mysql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 3306
+          protocol: TCP
+{{- end }}
+{{- if .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-redis-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 6379
+          protocol: TCP
+{{- end }}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-minio-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 9000
+          protocol: TCP
+        - port: 9001
+          protocol: TCP
+{{- end }}
+{{- if eq .Values.env.DOC_ENGINE "infinity" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-infinity-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: infinity
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 23817
+          protocol: TCP
+        - port: 23820
+          protocol: TCP
+        - port: 5432
+          protocol: TCP
+{{- end }}
+{{- if eq .Values.env.DOC_ENGINE "elasticsearch" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-elasticsearch-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: elasticsearch
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 9200
+          protocol: TCP
+{{- end }}
+{{- if eq .Values.env.DOC_ENGINE "opensearch" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ragflow.fullname" . }}-opensearch-access
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opensearch
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ragflow.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ragflow
+      ports:
+        - port: 9201
+          protocol: TCP
+{{- end }}
+{{- end }}

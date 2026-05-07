@@ -1,0 +1,301 @@
+# Ragflow Helm Chart - Production Values
+# Adapted for Vulcan RKE2 cluster (Traefik + cert-manager + nfs-client)
+
+global:
+  repo: ""
+  imagePullSecrets: []
+
+env:
+  DOC_ENGINE: infinity
+
+  STACK_VERSION: "8.11.3"
+  ELASTIC_PASSWORD: "CHANGE_ME_ELASTIC_PASSWORD"
+  OPENSEARCH_PASSWORD: "CHANGE_ME_OPENSEARCH_PASSWORD"
+
+  # Passwords (MYSQL_PASSWORD, MINIO_PASSWORD, REDIS_PASSWORD) are managed
+  # in the external ragflow-secrets Kubernetes Secret — NOT in this file.
+
+  MYSQL_DBNAME: rag_flow
+  MINIO_ROOT_USER: rag_flow
+
+  TZ: "America/Edmonton"
+
+  REGISTER_ENABLED: "0"
+  DISABLE_PASSWORD_LOGIN: "false"
+
+  DOC_BULK_SIZE: 4
+  EMBEDDING_BATCH_SIZE: 16
+
+ragflow:
+  image:
+    repository: infiniflow/ragflow
+    tag: v0.24.0
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  service_conf:
+    user_default_llm:
+      factory: "OpenAI-API-Compatible"
+      api_key: "CHANGE_ME_API_KEY"
+      base_url: "https://api.example.com/api/v1"
+      default_models:
+        chat_model:
+          name: "qwen3-235b"
+        embedding_model:
+          name: "bge-m3"
+        rerank_model: "bge-reranker-v2-m3"
+        asr_model:
+          name: "whisper-large-v3"
+        image2text_model:
+          name: "qwen-vl-3b"
+    oauth:
+      oidc:
+        display_name: "Example Identity Provider"
+        client_id: "ragflow.example.com"
+        client_secret: "CHANGEME"
+        issuer: "https://idp.example.com"
+        scope: "openid email profile"
+        redirect_uri: "https://ragflow.example.com/v1/user/oauth/callback/oidc"
+  llm_factories:
+  deployment:
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "8"
+        memory: 16Gi
+    terminationGracePeriodSeconds: 60
+    podAntiAffinity: true
+  securityContext:
+    allowPrivilegeEscalation: false
+  probes:
+    liveness:
+      httpGet:
+        path: /
+        port: http
+      initialDelaySeconds: 60
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 5
+    readiness:
+      httpGet:
+        path: /
+        port: http
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 5
+  service:
+    type: ClusterIP
+  admin:
+    enabled: true
+    port: 9381
+    serviceType: ClusterIP
+  api:
+    service:
+      enabled: true
+      type: ClusterIP
+
+infinity:
+  image:
+    repository: infiniflow/infinity
+    tag: v0.7.0-dev5
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  storage:
+    className: nfs-client
+    capacity: 50Gi
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "8"
+        memory: 8Gi
+  securityContext:
+    allowPrivilegeEscalation: false
+  service:
+    type: ClusterIP
+
+elasticsearch:
+  image:
+    repository: elasticsearch
+    tag: "8.11.3"
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  initContainers:
+    alpine:
+      repository: alpine
+      tag: latest
+      pullPolicy: IfNotPresent
+    busybox:
+      repository: busybox
+      tag: latest
+      pullPolicy: IfNotPresent
+  storage:
+    className: nfs-client
+    capacity: 20Gi
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: "4"
+        memory: "16Gi"
+  service:
+    type: ClusterIP
+
+opensearch:
+  image:
+    repository: opensearchproject/opensearch
+    tag: 2.19.1
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  initContainers:
+    alpine:
+      repository: alpine
+      tag: latest
+      pullPolicy: IfNotPresent
+    busybox:
+      repository: busybox
+      tag: latest
+      pullPolicy: IfNotPresent
+  storage:
+    className: nfs-client
+    capacity: 20Gi
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: "4"
+        memory: "16Gi"
+  service:
+    type: ClusterIP
+
+minio:
+  enabled: true
+  image:
+    repository: quay.io/minio/minio
+    tag: RELEASE.2023-12-20T01-00-02Z
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  storage:
+    className: nfs-client
+    capacity: 50Gi
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+  service:
+    type: ClusterIP
+
+mysql:
+  enabled: true
+  image:
+    repository: mysql
+    tag: 8.0.39
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  storage:
+    className: nfs-client
+    capacity: 20Gi
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  securityContext:
+    allowPrivilegeEscalation: false
+  service:
+    type: ClusterIP
+
+redis:
+  enabled: true
+  image:
+    repository: valkey/valkey
+    tag: 8
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  storage:
+    className: nfs-client
+    capacity: 2Gi
+  persistence:
+    enabled: true
+  deployment:
+    strategy:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  securityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    allowPrivilegeEscalation: false
+  service:
+    type: ClusterIP
+
+# Standard Kubernetes Ingress (disabled in favour of Traefik IngressRoute)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# Traefik-native IngressRoute (preferred for this cluster)
+ingressRoute:
+  enabled: true
+  entryPoints:
+    - websecure
+  host: ragflow.example.com
+  tls:
+    secretName: ragflow-tls
+  serversTransport:
+    enabled: true
+    disableHTTP2: true
+    forwardingTimeouts:
+      dialTimeout: 30s
+      idleConnTimeout: 300s
+      responseHeaderTimeout: 300s
+
+# cert-manager Certificate
+certificate:
+  enabled: true
+  commonName: ragflow.example.com
+  dnsNames:
+    - ragflow.example.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: example-cluster-issuer
+  secretName: ragflow-tls
+
+# Network policies to lock down backend services
+networkPolicy:
+  enabled: true

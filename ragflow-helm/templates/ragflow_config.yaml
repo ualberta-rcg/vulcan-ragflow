@@ -1,0 +1,221 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ragflow-service-config
+data:
+  {{- with .Values.ragflow.service_conf }}
+  local.service_conf.yaml: |
+    {{- . | toYaml | nindent 4 }}
+  {{- end }}
+  {{- with .Values.ragflow.llm_factories }}
+  llm_factories.json: |
+    {{- . | toPrettyJson | nindent 4 }}
+  {{- end }}
+  oidc.py: |
+    #
+    #  Copyright 2025 The InfiniFlow Authors. All Rights Reserved.
+    #
+    #  Licensed under the Apache License, Version 2.0 (the "License");
+    #  you may not use this file except in compliance with the License.
+    #  You may obtain a copy of the License at
+    #
+    #      http://www.apache.org/licenses/LICENSE-2.0
+    #
+    #  Unless required by applicable law or agreed to in writing, software
+    #  distributed under the License is distributed on an "AS IS" BASIS,
+    #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    #  See the License for the specific language governing permissions and
+    #  limitations under the License.
+    #
+
+    import re
+    import logging
+    import jwt
+    from common.http_client import sync_request
+    from .oauth import OAuthClient, UserInfo
+
+
+    class OIDCClient(OAuthClient):
+        def __init__(self, config):
+            """
+            Initialize the OIDCClient with the provider's configuration.
+            Use `issuer` as the single source of truth for configuration discovery.
+            """
+            self.issuer = config.get("issuer")
+            if not self.issuer:
+                raise ValueError("Missing issuer in configuration.")
+
+            oidc_metadata = self._load_oidc_metadata(self.issuer)
+            config.update({
+                'issuer': oidc_metadata['issuer'],
+                'jwks_uri': oidc_metadata['jwks_uri'], 
+                'authorization_url': oidc_metadata['authorization_endpoint'],
+                'token_url': oidc_metadata['token_endpoint'],
+                'userinfo_url': oidc_metadata['userinfo_endpoint']
+            })
+
+            super().__init__(config)
+            self.issuer = config['issuer']
+            self.jwks_uri = config['jwks_uri']
+
+
+        @staticmethod
+        def _load_oidc_metadata(issuer):
+            """
+            Load OIDC metadata from `/.well-known/openid-configuration`.
+            """
+            try:
+                metadata_url = f"{issuer}/.well-known/openid-configuration"
+                response = sync_request("GET", metadata_url, timeout=7)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                raise ValueError(f"Failed to fetch OIDC metadata: {e}")
+
+
+        def parse_id_token(self, id_token):
+            """
+            Parse and validate OIDC ID Token (JWT format) with signature verification.
+            """
+            try:
+                headers = jwt.get_unverified_header(id_token)
+                alg = headers.get("alg", "RS256")
+
+                jwks_cli = jwt.PyJWKClient(
+                    self.jwks_uri,
+                    headers={"User-Agent": "ragflow-http-client/1.0"}
+                )
+                signing_key = jwks_cli.get_signing_key_from_jwt(id_token).key
+
+                decoded_token = jwt.decode(
+                    id_token,
+                    key=signing_key,
+                    algorithms=[alg],  
+                    audience=str(self.client_id),
+                    issuer=self.issuer,
+                )
+                logging.info(f"OIDC id_token claims: {list(decoded_token.keys())}")
+                return decoded_token
+            except Exception as e:
+                raise ValueError(f"Error parsing ID Token: {e}")
+
+
+        def fetch_user_info(self, access_token, id_token=None, **kwargs):
+            """
+            Fetch user info.
+            """
+            user_info = {}
+            if id_token:
+                user_info = self.parse_id_token(id_token)
+            user_info.update(super().fetch_user_info(access_token).to_dict())
+            return self.normalize_user_info(user_info)
+
+        async def async_fetch_user_info(self, access_token, id_token=None, **kwargs):
+            user_info = {}
+            if id_token:
+                user_info = self.parse_id_token(id_token)
+                logging.info(f"OIDC id_token parsed user_info: {user_info}")
+            userinfo_resp = (await super().async_fetch_user_info(access_token)).to_dict()
+            logging.info(f"OIDC userinfo endpoint response: {userinfo_resp}")
+            user_info.update(userinfo_resp)
+            logging.info(f"OIDC merged user_info: {user_info}")
+            return self.normalize_user_info(user_info)
+
+
+        def normalize_user_info(self, user_info):
+            logging.info(f"OIDC normalize_user_info input keys: {list(user_info.keys())}")
+            logging.info(f"OIDC raw values - email: {user_info.get('email')}, ccPrimaryEmail: {user_info.get('ccPrimaryEmail')}, username: {user_info.get('username')}, preferred_username: {user_info.get('preferred_username')}, sub: {user_info.get('sub')}, nickname: {user_info.get('nickname')}, name: {user_info.get('name')}")
+            
+            email = user_info.get("email") or user_info.get("ccPrimaryEmail")
+            username = user_info.get("username") or user_info.get("preferred_username") or user_info.get("sub", "")
+            nickname = user_info.get("nickname") or user_info.get("name") or username
+            avatar_url = user_info.get("avatar_url") or user_info.get("picture", "")
+            
+            if not email and username:
+                sanitized = re.sub(r'[^a-zA-Z0-9._-]', '', username.lower())
+                email = f"{sanitized}@example.com"
+                logging.info(f"OIDC generated email from username: {email}")
+            
+            logging.info(f"OIDC final normalized - email: {email}, username: {username}, nickname: {nickname}")
+            return UserInfo(email=email, username=username, nickname=nickname, avatar_url=avatar_url)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  ragflow.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /ragflow/web/dist;
+
+        gzip on;
+        gzip_min_length 1k;
+        gzip_comp_level 9;
+        gzip_types text/plain application/javascript application/x-javascript text/css application/xml text/javascript application/x-httpd-php image/jpeg image/gif image/png;
+        gzip_vary on;
+        gzip_disable "MSIE [1-6]\.";
+
+        location ~ ^/api/v1/admin {
+            proxy_pass http://localhost:9381;
+            include proxy.conf;
+        }
+
+        location ~ ^/(v1|api) {
+            proxy_pass http://localhost:9380;
+            include proxy.conf;
+        }
+
+        location / {
+            index index.html;
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Cache-Control: max-age~@~AExpires
+        location ~ ^/static/(css|js|media)/ {
+            expires 10y;
+            access_log off;
+        }
+    }
+  proxy.conf: |
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  nginx.conf: |
+    user  root;
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log notice;
+    pid        /var/run/nginx.pid;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+        #tcp_nopush     on;
+
+        keepalive_timeout  65;
+
+        #gzip  on;
+        client_max_body_size 128M;
+
+        include /etc/nginx/conf.d/ragflow.conf;
+    }

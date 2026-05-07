@@ -1,0 +1,277 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ragflow.fullname" . }}
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ragflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ragflow
+  {{- with .Values.ragflow.deployment.strategy }}
+  strategy:
+    {{- . | toYaml | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "ragflow.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ragflow
+      annotations:
+        checksum/values: {{ .Values | toYaml | sha256sum }}
+        checksum/config-env: {{ include (print $.Template.BasePath "/env.yaml") . | sha256sum }}
+        checksum/config-ragflow: {{ include (print $.Template.BasePath "/ragflow_config.yaml") . | sha256sum }}
+    spec:
+      {{- if or .Values.global.imagePullSecrets .Values.ragflow.image.pullSecrets }}
+      imagePullSecrets:
+        {{- with .Values.global.imagePullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.ragflow.image.pullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.ragflow.deployment.terminationGracePeriodSeconds | default 60 }}
+      {{- if .Values.ragflow.deployment.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "ragflow.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: ragflow
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      initContainers:
+      - name: patch-settings
+        image: {{ include "ragflow.imageRepo" (dict "root" . "repo" .Values.ragflow.image.repository) }}:{{ .Values.ragflow.image.tag }}
+        envFrom:
+          - secretRef:
+              name: ragflow-secrets
+        command:
+          - /bin/sh
+          - -c
+          - |
+            # Patch settings.py to check SECRET_KEY env var first
+            sed -i 's/def _get_or_create_secret_key():/def _get_or_create_secret_key():\n    secret_key = os.environ.get("SECRET_KEY")\n    if secret_key and len(secret_key) >= 32:\n        import logging\n        logging.info("Using SECRET_KEY from environment variable")\n        return secret_key/' /ragflow/common/settings.py
+            cp /ragflow/common/settings.py /patched/settings.py
+            
+            # Patch api/apps/__init__.py to fix OAuth/OIDC login
+            # See https://github.com/infiniflow/ragflow/issues/13663
+            # 1. Strip "Bearer " prefix from Authorization header
+            # 2. Add session-based fallback when no Authorization header
+            awk '
+            /def _load_user\(\)/ {found=1}
+            found && /authorization = request.headers.get\("Authorization"\)/ && !patched {
+                print
+                print "    # Strip Bearer prefix for OAuth/OIDC compatibility"
+                print "    if authorization and authorization.startswith(\"Bearer \"):"
+                print "        authorization = authorization[7:]"
+                patched=1
+                next
+            }
+            found && /g.user = None/ && !session_patched {
+                print
+                print "    # Session-based fallback for OAuth/OIDC (when no Authorization header)"
+                print "    if not authorization:"
+                print "        user_id = session.get(\"_user_id\")"
+                print "        if user_id:"
+                print "            user = UserService.query(id=user_id, status=StatusEnum.VALID.value)"
+                print "            if user:"
+                print "                g.user = user[0]"
+                print "                return user[0]"
+                session_patched=1
+                next
+            }
+            # Skip the original "if not authorization: return None" since we handle it above
+            found && session_patched && /if not authorization:/ && !skip_done {getline; skip_done=1; next}
+            {print}
+            ' /ragflow/api/apps/__init__.py > /tmp/init_patched.py
+            cp /tmp/init_patched.py /patched/apps_init.py
+            
+            # Patch service_conf.yaml to inject OIDC_CLIENT_SECRET from environment
+            if [ -n "$OIDC_CLIENT_SECRET" ]; then
+              sed "s/client_secret: CHANGEME/client_secret: $OIDC_CLIENT_SECRET/" /ragflow/conf/local.service_conf.yaml > /patched/local.service_conf.yaml
+            else
+              cp /ragflow/conf/local.service_conf.yaml /patched/local.service_conf.yaml
+            fi
+            
+            # Patch llm_service.py to create tenant_llm entries from settings when no models in llm table
+            # This fixes OpenAI-API-Compatible which has no pre-defined models
+            awk '
+            /^def get_init_tenant_llm/ {in_func=1}
+            in_func && /return list\(unique\.values\(\)\)/ {
+                print "    # If no models found in llm table, create from settings directly"
+                print "    if not tenant_llm:"
+                print "        for model_type, cfg in model_configs.items():"
+                print "            if cfg.get(\"model\"):"
+                print "                model_name = cfg[\"model\"].split(\"@\")[0]"
+                print "                tenant_llm.append({"
+                print "                    \"tenant_id\": user_id,"
+                print "                    \"llm_factory\": cfg[\"factory\"],"
+                print "                    \"llm_name\": model_name,"
+                print "                    \"model_type\": model_type,"
+                print "                    \"api_key\": cfg.get(\"api_key\", \"\"),"
+                print "                    \"api_base\": cfg.get(\"base_url\", \"\"),"
+                print "                    \"max_tokens\": 8192 if model_type in [\"embedding\", \"rerank\"] else 96000,"
+                print "                })"
+                print "    return list(unique.values()) if unique else tenant_llm"
+                in_func=0
+                next
+            }
+            {print}
+            ' /ragflow/api/db/services/llm_service.py > /patched/llm_service.py
+        volumeMounts:
+          - name: patched-files
+            mountPath: /patched
+          - name: service-conf-volume
+            mountPath: /ragflow/conf/local.service_conf.yaml
+            subPath: local.service_conf.yaml
+      containers:
+      - name: ragflow
+        image: {{ include "ragflow.imageRepo" (dict "root" . "repo" .Values.ragflow.image.repository) }}:{{ .Values.ragflow.image.tag }}
+        {{- with .Values.ragflow.image.pullPolicy }}
+        imagePullPolicy: {{ . }}
+        {{- end }}
+        {{- if .Values.ragflow.admin.enabled }}
+        args:
+          - "--enable-adminserver"
+        {{- end }}
+        ports:
+          - containerPort: 80
+            name: http
+          - containerPort: 9380
+            name: http-api
+          {{- if .Values.ragflow.admin.enabled }}
+          - containerPort: 9381
+            name: admin
+          {{- end }}
+        {{- with .Values.ragflow.probes }}
+        {{- with .liveness }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .readiness }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.ragflow.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        volumeMounts:
+          - mountPath: /etc/nginx/conf.d/ragflow.conf
+            subPath: ragflow.conf
+            name: nginx-config-volume
+          - mountPath: /etc/nginx/proxy.conf
+            subPath: proxy.conf
+            name: nginx-config-volume
+          - mountPath: /etc/nginx/nginx.conf
+            subPath: nginx.conf
+            name: nginx-config-volume
+          {{- with .Values.ragflow.service_conf }}
+          - mountPath: /ragflow/conf/local.service_conf.yaml
+            subPath: local.service_conf.yaml
+            name: patched-files
+          {{- end }}
+          {{- with .Values.ragflow.llm_factories }}
+          - mountPath: /ragflow/conf/llm_factories.json
+            subPath: llm_factories.json
+            name: service-conf-volume
+          {{- end }}
+          - mountPath: /ragflow/api/apps/auth/oidc.py
+            subPath: oidc.py
+            name: service-conf-volume
+          - mountPath: /ragflow/common/settings.py
+            subPath: settings.py
+            name: patched-files
+          - mountPath: /ragflow/api/apps/__init__.py
+            subPath: apps_init.py
+            name: patched-files
+          - mountPath: /ragflow/api/db/services/llm_service.py
+            subPath: llm_service.py
+            name: patched-files
+        envFrom:
+          - secretRef:
+              name: {{ include "ragflow.fullname" . }}-env-config
+          - secretRef:
+              name: ragflow-secrets
+        {{- with .Values.ragflow.deployment.resources }}
+        resources:
+          {{- . | toYaml | nindent 10 }}
+        {{- end }}
+      volumes:
+        - name: patched-files
+          emptyDir: {}
+        - name: nginx-config-volume
+          configMap:
+            name: nginx-config
+        - name: service-conf-volume
+          configMap:
+            name: ragflow-service-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ragflow.fullname" . }}
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+spec:
+  selector:
+    {{- include "ragflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: http
+      name: http
+  type: {{ .Values.ragflow.service.type }}
+---
+{{- if .Values.ragflow.api.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+spec:
+  selector:
+    {{- include "ragflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: http-api
+      name: http-api
+  type: {{ .Values.ragflow.api.service.type }}
+{{- end }}
+
+{{- if .Values.ragflow.admin.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-admin
+  labels:
+    {{- include "ragflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+spec:
+  selector:
+    {{- include "ragflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ragflow
+  ports:
+    - protocol: TCP
+      port: {{ .Values.ragflow.admin.port }}
+      targetPort: admin
+      name: admin
+  type: {{ .Values.ragflow.admin.serviceType }}
+{{- end }}
