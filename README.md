@@ -8,7 +8,9 @@
 
 ## 🧰 Description
 
-A production Helm deployment of **RAGFlow** (`infiniflow/ragflow:v0.24.0`) on the Vulcan RKE2 cluster, customized for the **Digital Research Alliance of Canada**.
+Helm chart for self-hosted **RAGFlow** — OIDC auth, Traefik ingress, and bring-your-own OpenAI-compatible LLM. Upload documents, chat with your knowledge base, own your stack.
+
+A production Helm deployment of **RAGFlow** (`infiniflow/ragflow:v0.24.0`), originally built for the Vulcan RKE2 cluster at the **Digital Research Alliance of Canada**, but designed to be portable to any Kubernetes cluster with Traefik, cert-manager, and a ReadWriteMany StorageClass.
 
 **What is RAGFlow?**
 [RAGFlow](https://github.com/infiniflow/ragflow) is an open-source Retrieval-Augmented Generation (RAG) platform by InfiniFlow. Users upload documents — PDFs, Word files, spreadsheets, web pages — and RAGFlow handles parsing, chunking, embedding, vector search, and chat. The end result is a multi-tenant web UI where users can have AI-powered conversations with their own knowledge base, backed by whatever LLM you point it at.
@@ -28,10 +30,10 @@ Optional doc engine swap: `infinity` (default), `elasticsearch`, or `opensearch`
 Not horizontally in any meaningful way. The RAGFlow app has `podAntiAffinity` configured so it could in theory run multiple replicas, but every backend (MySQL, MinIO, Valkey, Infinity) is a single-replica StatefulSet. This is built to be a stable single-node production deployment — vertical scaling via the resource limits in `values.yaml` is the supported path. True HA would need significant rework.
 
 **What makes this different from upstream**
-This is not the stock InfiniFlow chart. It has been customized for Alliance infrastructure with:
+This is not the stock InfiniFlow chart. It ships with:
 
-- OIDC login wired to the Alliance identity provider
-- LLM inference pointed at an internal serving endpoint (OpenAI-API-Compatible)
+- OIDC login wired to any standards-compliant identity provider (issuer, client id/secret, scopes, redirect URI all configurable)
+- Bring-your-own LLM — any OpenAI-API-compatible endpoint (vLLM, LiteLLM, Ollama, OpenRouter, OpenAI itself, etc.) configured via `api_key`, `base_url`, and per-role model names in `values-secret.yaml`
 - Traefik `IngressRoute` + cert-manager `Certificate` for ingress and TLS
 - `NetworkPolicy` resources locking down backend services to the RAGFlow pod
 - Runtime patches applied via initContainer to fix upstream compatibility issues with the OIDC auth flow, `Bearer` token handling, and tenant model bootstrap

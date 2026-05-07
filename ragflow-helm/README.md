@@ -1,6 +1,6 @@
 # RAGFlow Helm Chart (Vulcan)
 
-Customized Helm chart for deploying [RAGFlow](https://github.com/infiniflow/ragflow) (`infiniflow/ragflow:v0.24.0`) on the Vulcan RKE2 cluster. This chart is part of the [`vulcan-ragflow`](../README.md) deployment repo and is tailored for the **Digital Research Alliance of Canada** (Traefik + cert-manager + `nfs-client`).
+Helm chart for self-hosted [RAGFlow](https://github.com/infiniflow/ragflow) (`infiniflow/ragflow:v0.24.0`) — OIDC auth, Traefik ingress, and bring-your-own OpenAI-compatible LLM. Part of the [`vulcan-ragflow`](../README.md) deployment repo. Originally built for the Vulcan RKE2 cluster at the **Digital Research Alliance of Canada** (Traefik + cert-manager + `nfs-client`), portable to any cluster with the same primitives.
 
 For full deployment workflow, secret handling, and the `deploy-ragflow.sh` operator script, see the [parent repo README](../README.md). This document covers chart structure and values only.
 
@@ -139,7 +139,10 @@ A standard `ingress:` block is still available (`ingress.enabled: true`) if you 
 
 ## LLM and OIDC
 
-LLM endpoint and OIDC are configured under `ragflow.service_conf` and overridden per environment via `values-secret.yaml` (see parent README). Defaults in `values.yaml` are placeholders (`CHANGE_ME_*`, `example.com`).
+Both are bring-your-own and configured under `ragflow.service_conf`, overridden per environment via `values-secret.yaml` (see parent README). Defaults in `values.yaml` are placeholders (`CHANGE_ME_*`, `example.com`).
+
+- **LLM:** any OpenAI-API-compatible endpoint — set `api_key`, `base_url`, and the five model names under `default_models` (`chat_model`, `embedding_model`, `rerank_model`, `asr_model`, `image2text_model`). Works with vLLM, LiteLLM, Ollama, OpenRouter, OpenAI, etc.
+- **OIDC:** any standards-compliant IdP — set `display_name`, `client_id`, `client_secret`, `issuer`, `scope`, `redirect_uri`.
 
 ## Validate the Chart
 
